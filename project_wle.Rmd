@@ -1,0 +1,148 @@
+---
+title: "Project WLE"
+author: "duc"
+date: "Sunday, December 21, 2014"
+output: html_document
+---
+Load libraries
+```{r}
+library(caret)
+library(plyr)
+```
+
+
+1. Load ds and rename the first column to record.id
+```{r}
+ds <- read.csv("pml-training.csv", header = T)
+names(ds)[1] <- "record.id"
+```
+2. Partition data set to use 10-fold CV later
+```{r}
+partition <- createFolds(y = ds$classe, k = 10)
+```
+
+In the following, I explain preprocess steps I used to select features. I used the first partition to illustrate the idea.
+3. Pick first partition
+```{r}
+valid.1 <- ds[partition$Fold01, ]
+train.1 <- ds[-partition$Fold01, ]
+```
+
+4. Preprocess stage has the following steps:
+* Remove the first 7 columns since they seem not to be features
+```{r}
+train.1 <- train.1[ ,-(1:7)]
+valid.1 <- valid.1[ ,-(1:7)]
+```
+
+* Separate labels from features
+```{r}
+y.train <- train.1$classe
+train.1$classe <- NULL
+y.valid <- valid.1$classe
+valid.1$classe <- NULL
+```
+After excluding label column, number of predictors:
+```{r}
+ncol(train.1)
+ncol(valid.1)
+```
+
+* Find and exclude vars with nearly zero variability
+```{r}
+nzv.info <- nearZeroVar(train.1, saveMetrics = T)
+nz.vars <- which(nzv.info$nzv == T)
+train.1 <- train.1[ , -nz.vars]
+valid.1 <- valid.1[ , -nz.vars]
+```
+After this step, number of predictors:
+```{r}
+ncol(train.1)
+ncol(valid.1)
+```
+
+* Exclude cols with too many NAs
+```{r}
+propNA <- function(col, ds) {
+  prop.na <- sum(is.na(ds[ ,col]))/nrow(ds)
+  data.frame("predictor" = names(ds)[col], "prop.na" = prop.na)
+}
+na.summary <- ldply(1: ncol(train.1), propNA, ds = train.1)
+too.many.nas <- which(na.summary$prop.na > 0.90)
+train.1 <- train.1[ ,-too.many.nas]
+valid.1 <- valid.1[ ,-too.many.nas]
+```
+After this step, number of predictors:
+```{r}
+ncol(train.1)
+ncol(valid.1)
+```
+
+5. Train random forest using ntree=100
+```{r}
+require(randomForest)
+rf.fit <- randomForest(y = y.train, x = train.1, ntree = 100)
+rf.pred <- predict(rf.fit, valid.1)
+confusionMatrix(rf.pred, reference = y.valid)
+```
+
+So we got very high accuracy right on the first try :). 
+
+To avoid overfit we now perform 10-folds CV. This include the main steps: 
+* Preprocess each pair (train, valid) as what we have done for the first pair (train.1, valid.1)
+* Run random forest for each pair and get accuracy
+* Get mean accuracy
+
+Let us go into details.
+* Function to preprocess each pair (basically it has the same steps as illustrated above)
+```{r}
+myPreProcess <- function(train, valid) {
+  train <- train[ ,-(1:7)]
+  valid <- valid[ ,-(1:7)] 
+  
+  nzv.info <- nearZeroVar(train, saveMetrics = T)
+  nz.vars <- which(nzv.info$nzv == T)
+  train <- train[ , -nz.vars]
+  valid <- valid[ , -nz.vars]
+  
+  propNA <- function(col, ds) {
+  prop.na <- sum(is.na(ds[ ,col]))/nrow(ds)
+  data.frame("predictor" = names(ds)[col], "prop.na" = prop.na)
+}
+  na.summary <- ldply(1: ncol(train), propNA, ds = train)
+  too.many.nas <- which(na.summary$prop.na > 0.90)
+  train <- train[ ,-too.many.nas]
+  valid <- valid[ ,-too.many.nas]
+  ## return processed train and test sets
+  list(train = train, valid = valid)
+}
+```
+
+* Define function to run random forest for each pair and get accuracy
+```{r}
+runRF <- function(i) {
+  valid <- ds[partition[[i]], ]
+  train <- ds[-partition[[i]], ] 
+  pair <- myPreProcess(train = train, valid = valid)
+  train <- pair$train
+  valid <- pair$valid
+  cat("Start running random forest \n")
+  rf.fit <- randomForest(y = train$classe, x = train[ ,-ncol(train)], ntree = 100)
+  rf.pred <- predict(rf.fit, valid[ ,-ncol(valid)])
+  conf.mat <- confusionMatrix(rf.pred, reference = valid$classe)
+  data.frame("fold" = i, "accuracy" = conf.mat$overall["Accuracy"])
+}
+```
+
+* Run the function and get mean accuracy
+```{r}
+require(randomForest)
+res <- ldply(1:10, runRF, .progress = "time")
+mean(res$accuracy)
+```
+
+
+
+
+
+
